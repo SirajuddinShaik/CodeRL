@@ -43,8 +43,23 @@ class HybridTransformerConfig(PretrainedConfig):
         self.batch_size = kwargs.pop("batch_size", 1)
         self.log_freq = kwargs.pop("log_freq", 100)
         
+        # Retrieval layer configuration
+        self.num_retrieval_layers = kwargs.pop("num_retrieval_layers", None)
+        
         # Call parent init with remaining kwargs
         super().__init__(**kwargs)
+    
+    def get_retrieval_layers(self) -> list:
+        """Calculate which layers should perform external memory retrieval."""
+        total_layers = self.num_hidden_layers
+        
+        if self.num_retrieval_layers is None:
+            # Default: L // 6 layers retrieve
+            retrieval_layers = max(1, total_layers // 6)
+        else:
+            retrieval_layers = min(self.num_retrieval_layers, total_layers)
+        
+        return [int(k * total_layers / retrieval_layers) for k in range(retrieval_layers)]
 
 
 class HybridMemoryAttention(nn.Module):
@@ -87,6 +102,22 @@ class HybridMemoryAttention(nn.Module):
                 config.hidden_size,
                 bias=False
             )
+        
+        # Gating network for dynamic memory fusion
+        # Projects hidden states to gate logits for each memory source
+        # Maximum 3 sources: self-attention, internal memory, external memory
+        self.gate_network = nn.Linear(
+            config.hidden_size,
+            3,  # Max number of memory sources
+            bias=True
+        )
+        
+        # Determine active sources at initialization
+        self.active_sources = 1  # Always have self-attention
+        if config.use_internal_memory:
+            self.active_sources += 1
+        if config.use_external_memory:
+            self.active_sources += 1
     
     def forward(
         self,
@@ -98,7 +129,10 @@ class HybridMemoryAttention(nn.Module):
         position_embeddings: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Forward pass with hybrid memory.
+        Forward pass with hybrid memory using softmax-based gating.
+        
+        Implements: H_t = g[0] * A_t + g[1] * M_int + g[2] * M_ext
+        where g = softmax(W_g @ h_t + b_g)
         
         Args:
             hidden_states: Input hidden states [batch, seq_len, hidden_dim]
@@ -109,17 +143,15 @@ class HybridMemoryAttention(nn.Module):
             position_embeddings: Rotary position embeddings
         
         Returns:
-            output: Attention output
+            output: Gated combination of memory outputs
             updated_internal_memory: Updated internal memory state
         """
-        # Standard self-attention
-        # LlamaAttention returns (attn_output, attn_weights, past_key_values) when use_cache=True
-        # or just (attn_output, None) when use_cache=False
+        # Standard self-attention (A_t)
         attn_result = self.self_attn(
             hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_values=None,  # Updated from past_key_value to past_key_values
+            past_key_values=None,
             output_attentions=False,
             use_cache=False,
             cache_position=None,
@@ -131,25 +163,99 @@ class HybridMemoryAttention(nn.Module):
         else:
             attn_output = attn_result
         
-        # Apply internal memory if enabled
+        # Collect active memory sources
+        memory_outputs = [attn_output]  # Always include self-attention
+        
+        # Internal memory (M_int)
         updated_internal_memory = None
         if self.internal_memory is not None and internal_memory is not None:
-            gated_memory, updated_internal_memory = self.internal_memory(
+            internal_mem_output, updated_internal_memory = self.internal_memory(
                 attn_output,
                 internal_memory,
                 attention_mask
             )
-            attn_output = attn_output + gated_memory
+            memory_outputs.append(internal_mem_output)
         
-        # Fuse external memory if available
+        # External memory (M_ext)
         if self.use_external_memory and external_kv is not None:
-            attn_output = self._fuse_external_memory(
+            external_mem_output = self._compute_external_memory(
                 attn_output,
                 external_kv,
                 attention_mask
             )
+            memory_outputs.append(external_mem_output)
         
-        return attn_output, updated_internal_memory
+        # Compute gating weights using softmax
+        # g = softmax(W_g @ h_t + b_g)  shape: [batch, seq_len, num_sources]
+        gate_logits = self.gate_network(hidden_states)  # [batch, seq_len, 3]
+        
+        # Only use gates for active sources (determined at init)
+        gate_logits = gate_logits[:, :, :self.active_sources]  # [batch, seq_len, active_sources]
+        gate_weights = F.softmax(gate_logits, dim=-1)  # [batch, seq_len, active_sources]
+        
+        # Combine memory outputs using gating weights
+        # H_t = sum(g[i] * M[i]) for i in active_sources
+        combined_output = torch.zeros_like(attn_output)
+        for i, mem_output in enumerate(memory_outputs):
+            # gate_weights[:, :, i:i+1] has shape [batch, seq_len, 1]
+            # mem_output has shape [batch, seq_len, hidden_dim]
+            combined_output = combined_output + gate_weights[:, :, i:i+1] * mem_output
+        
+        return combined_output, updated_internal_memory
+    
+    def _compute_external_memory(
+        self,
+        hidden_states: torch.Tensor,
+        external_kv: Dict[str, torch.Tensor],
+        attention_mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """
+        Compute external memory output using joint attention.
+        Returns the memory output without residual connection (for gating).
+        """
+        batch_size, seq_len, hidden_dim = hidden_states.shape
+        
+        # Reshape for multi-head attention
+        query = hidden_states.view(
+            batch_size, seq_len, self.num_heads, self.head_dim
+        ).transpose(1, 2)  # [batch, num_heads, seq_len, head_dim]
+        
+        # External keys and values: [batch*num_heads, seq_len, k, head_dim]
+        ext_keys = external_kv['k']
+        ext_values = external_kv['v']
+        
+        # Reshape external memories
+        ext_keys = ext_keys.view(
+            batch_size, self.num_heads, seq_len, -1, self.head_dim
+        )  # [batch, num_heads, seq_len, k, head_dim]
+        ext_values = ext_values.view(
+            batch_size, self.num_heads, seq_len, -1, self.head_dim
+        )
+        
+        # Compute attention scores with external memories
+        scores = torch.einsum(
+            'bhqd,bhqkd->bhqk',
+            query,
+            ext_keys
+        ) / (self.head_dim ** 0.5)
+        
+        # Apply softmax
+        attn_weights = F.softmax(scores, dim=-1)
+        
+        # Weighted sum of external values
+        external_context = torch.einsum(
+            'bhqk,bhqkd->bhqd',
+            attn_weights,
+            ext_values
+        )
+        
+        # Reshape and project
+        external_context = external_context.transpose(1, 2).contiguous().view(
+            batch_size, seq_len, hidden_dim
+        )
+        external_context = self.external_mem_proj(external_context)
+        
+        return external_context
     
     def _fuse_external_memory(
         self,
@@ -157,7 +263,10 @@ class HybridMemoryAttention(nn.Module):
         external_kv: Dict[str, torch.Tensor],
         attention_mask: Optional[torch.Tensor]
     ) -> torch.Tensor:
-        """Fuse retrieved external memories using joint attention."""
+        """
+        Fuse retrieved external memories using joint attention.
+        Legacy method - kept for backward compatibility.
+        """
         batch_size, seq_len, hidden_dim = hidden_states.shape
         
         # Reshape for multi-head attention
@@ -367,13 +476,17 @@ class HybridTransformerModel(PreTrainedModel):
         # Get position embeddings
         position_embeddings = self.model.rotary_emb(hidden_states, position_ids)
         
+        # Get retrieval layers
+        retrieval_layers = set(self.config.get_retrieval_layers())
+        
         # Process through decoder layers
         for layer_idx, decoder_layer in enumerate(self.model.layers):
-            # Retrieve from external memory if enabled
+            # Retrieve from external memory only at specified layers
             external_kv = None
             if (use_external_memory and 
                 self.external_memory is not None and
-                self.external_memory.is_ready()):
+                self.external_memory.is_ready() and
+                layer_idx in retrieval_layers):
                 
                 # Get queries for retrieval (use hidden states)
                 queries = hidden_states.transpose(0, 1)  # [seq_len, batch, hidden]
