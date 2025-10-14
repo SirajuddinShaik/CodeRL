@@ -1,14 +1,28 @@
-[tool.poetry]
+[project]
 name = "MemoryAugmentedTransformer"
 version = "0.1.0"
 description = ""
-authors = ["Shaik Sirajuddin"]
+authors = [{name = "Shaik Sirajuddin"}]
 readme = "README.md"
-packages = [{include = "mem_aug", from = "src"}]
+requires-python = ">=3.8"
+dependencies = [
+    "tree-sitter>=0.20.0,<0.21.0",
+    "tree-sitter-languages>=1.10.2",
+    "pyyaml>=6.0",
+]
 
-[tool.poetry.group.dev.dependencies]
-ipykernel = "^6.29.4"
+[project.optional-dependencies]
+dev = [
+    "ipykernel>=6.29.4",
+]
+
+[project.scripts]
+manage-repos = "mem_aug.utils.repo_manager:cli"
+generate-ast = "mem_aug.components.datagen.data_gen_step_1:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mem_aug"]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
