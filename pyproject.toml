@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "MemoryAugmentedTransformer"
+version = "0.1.0"
+description = ""
+authors = ["Shaik Sirajuddin"]
+readme = "README.md"
+packages = [{include = "mem_aug", from = "src"}]
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
