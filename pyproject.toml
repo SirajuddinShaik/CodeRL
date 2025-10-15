@@ -18,7 +18,9 @@ dev = [
 
 [project.scripts]
 manage-repos = "mem_aug.utils.repo_manager:cli"
-generate-ast = "mem_aug.components.datagen.data_gen_step_1:cli"
+generate-ast = "mem_aug.components.datagen.generate_commit_ast:cli"
+generate-ast-diffs = "mem_aug.components.datagen.generate_ast_diffs:cli"
+build-commit-diff = "mem_aug.utils.build_commit_diff:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mem_aug"]
