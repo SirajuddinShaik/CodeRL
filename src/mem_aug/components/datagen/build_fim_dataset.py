@@ -62,10 +62,80 @@ def find_exact_changes_in_span(before_span: str, after_span: str) -> Tuple[int, 
 def create_fim_sample(diff_data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a FIM format sample from diff data with context lines around the exact change."""
     file_path = diff_data.get('file', '')
+    status = diff_data.get('status', 'modified')
+
+    # Map status to operation type
+    status_to_op = {
+        'modified': 'UPDATE',
+        'added': 'ADD',
+        'removed': 'DELETE'
+    }
+    operation_type = status_to_op.get(status, 'UPDATE')
+
     before_code = diff_data.get('before_code', '')
     after_code = diff_data.get('after_code', '')
     diff_span = diff_data.get('diff_span', {})
 
+    # Handle ADDED functions - entire function is new
+    if status == 'added':
+        if not after_code:
+            return None
+
+        imports = extract_imports_from_code(after_code)
+        return {
+            "file_name": file_path,
+            "imports": imports,
+            "operation_type": operation_type,
+            "fim_prefix": "",
+            "fim_suffix": "",
+            "fim_middle": after_code,
+            "metadata": {
+                "commit_hash": diff_data.get('commit_metadata', {}).get('commit_hash', ''),
+                "author": diff_data.get('commit_metadata', {}).get('author_name', ''),
+                "commit_message": diff_data.get('commit_metadata', {}).get('commit_message', ''),
+                "function_id": diff_data.get('id', ''),
+                "kind": diff_data.get('kind', ''),
+                "diff_context": {
+                    "lines_before_change": 0,
+                    "lines_after_change": 0,
+                    "exact_change_start": 0,
+                    "exact_change_end": len(after_code.split('\n')),
+                    "context_window": "entire function (new)"
+                }
+            }
+        }
+
+    # Handle DELETED functions - entire function is removed
+    if status == 'removed':
+        if not before_code:
+            return None
+
+        imports = extract_imports_from_code(before_code)
+        return {
+            "file_name": file_path,
+            "imports": imports,
+            "operation_type": operation_type,
+            "fim_prefix": "",
+            "fim_suffix": "",
+            "fim_middle": "",  # Empty because function was deleted
+            "metadata": {
+                "commit_hash": diff_data.get('commit_metadata', {}).get('commit_hash', ''),
+                "author": diff_data.get('commit_metadata', {}).get('author_name', ''),
+                "commit_message": diff_data.get('commit_metadata', {}).get('commit_message', ''),
+                "function_id": diff_data.get('id', ''),
+                "kind": diff_data.get('kind', ''),
+                "diff_context": {
+                    "lines_before_change": 0,
+                    "lines_after_change": 0,
+                    "exact_change_start": 0,
+                    "exact_change_end": len(before_code.split('\n')),
+                    "context_window": "entire function (deleted)",
+                    "deleted_code": before_code
+                }
+            }
+        }
+
+    # Handle MODIFIED functions - only changed lines
     if not diff_span or 'before' not in diff_span or 'after' not in diff_span:
         return None
 
@@ -164,7 +234,7 @@ def create_function_series(changes: List[Dict[str, Any]], function_id: str) -> L
 
     # Process each change
     for i, change in enumerate(sorted_changes):
-        fim_sample = create_fim_sample(change, "UPDATE")
+        fim_sample = create_fim_sample(change)
         if fim_sample:
             # Add series metadata
             fim_sample["metadata"]["series_info"] = {
@@ -229,7 +299,7 @@ def process_commit_directory(commit_dir: str) -> Dict[str, List[Dict[str, Any]]]
     for function_id, changes in function_changes.items():
         if len(changes) == 1:
             # Single change in function - create one FIM sample
-            fim_sample = create_fim_sample(changes[0], "UPDATE")
+            fim_sample = create_fim_sample(changes[0])
             if fim_sample:
                 fim_functions[function_id] = [fim_sample]
         else:
