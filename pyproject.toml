@@ -21,6 +21,7 @@ manage-repos = "mem_aug.utils.repo_manager:cli"
 generate-ast = "mem_aug.components.datagen.generate_commit_ast:cli"
 generate-ast-diffs = "mem_aug.components.datagen.generate_ast_diffs:cli"
 build-commit-diff = "mem_aug.utils.build_commit_diff:cli"
+check-ast-coverage = "mem_aug.utils.check_ast_coverage:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mem_aug"]
