@@ -71,6 +71,9 @@ class ExternalMemoryBank:
         self.id_to_chunks = {}  # Maps entry_id -> list of chunk indices
         self.current_index = 0  # For set_index/get_index functionality
         
+        # Learnable retrieval gate threshold (configurable)
+        self.retrieval_threshold = 0.5  # Default threshold, can be changed via set_threshold()
+        
         # Model and tokenizer for text encoding (optional)
         self.model = model
         self.tokenizer = tokenizer
@@ -983,3 +986,17 @@ class ExternalMemoryBank:
             del self.id_to_chunks[entry_id]
         
         return True
+    
+    def set_threshold(self, threshold: float):
+        """
+        Set the retrieval gate threshold.
+        
+        Args:
+            threshold: Float between 0 and 1. Higher values make retrieval more selective.
+                      Default is 0.5.
+        """
+        self.retrieval_threshold = max(0.0, min(1.0, threshold))
+    
+    def get_threshold(self) -> float:
+        """Get the current retrieval gate threshold."""
+        return self.retrieval_threshold

@@ -43,6 +43,9 @@ class HybridTransformerConfig(PretrainedConfig):
         self.chunk_size = kwargs.pop("chunk_size", 4)
         self.use_gpu_to_search = kwargs.pop("use_gpu_to_search", True)
         
+        # Learnable retrieval gate
+        self.use_gated_retrieval = kwargs.pop("use_gated_retrieval", False)
+        
         # Embedding layer path for fast text encoding (user-configurable)
         self.embedding_layer_path = kwargs.pop("embedding_layer_path", None)
         # Remove fixed batch size constraint for better parallelization
@@ -127,6 +130,18 @@ class HybridMemoryAttention(nn.Module):
             self.active_sources += 1
         if config.use_external_memory:
             self.active_sources += 1
+        
+        # Learnable retrieval gate (if enabled)
+        use_gated_retrieval = getattr(config, 'use_gated_retrieval', False)
+        if use_gated_retrieval and config.use_external_memory:
+            self.g_retrieve = nn.Parameter(torch.tensor(0.5))
+            self.use_gated_retrieval = True
+            # Cache for previously retrieved context (reused when gate < threshold)
+            self.cached_ext_context = None
+        else:
+            self.g_retrieve = None
+            self.use_gated_retrieval = False
+            self.cached_ext_context = None
     
     def forward(
         self,
@@ -190,14 +205,52 @@ class HybridMemoryAttention(nn.Module):
             )
             memory_outputs.append(internal_mem_output)
         
-        # External memory (M_ext)
+        # External memory (M_ext) with gating and context caching
+        ext_out = None
         if self.use_external_memory and external_kv is not None:
-            external_mem_output = self._compute_external_memory(
-                attn_output,
-                external_kv,
-                attention_mask
-            )
-            memory_outputs.append(external_mem_output)
+            if self.use_gated_retrieval and self.g_retrieve is not None:
+                # Compute gate value
+                gate = torch.sigmoid(self.g_retrieve)
+                
+                # Check against threshold
+                if self.training:
+                    # During training: always retrieve but weight the output
+                    ext_context = self._compute_external_memory(
+                        attn_output,
+                        external_kv,
+                        attention_mask
+                    )
+                    ext_out = gate * ext_context
+                    # Cache the retrieved context for potential reuse
+                    self.cached_ext_context = ext_context.detach()
+                else:
+                    # During inference: adaptive retrieval with caching
+                    threshold = getattr(self.config, 'retrieval_threshold', 0.5)
+                    if gate.item() > threshold:
+                        # Gate above threshold: retrieve fresh context
+                        ext_out = self._compute_external_memory(
+                            attn_output,
+                            external_kv,
+                            attention_mask
+                        )
+                        # Update cache with fresh retrieval
+                        self.cached_ext_context = ext_out.detach()
+                    else:
+                        # Gate below threshold: reuse cached context if available
+                        if self.cached_ext_context is not None:
+                            # Reuse previous retrieval (model learns when context is still valid)
+                            ext_out = self.cached_ext_context
+                        # else: ext_out remains None (no cache available yet)
+            else:
+                # Standard retrieval without gating
+                ext_out = self._compute_external_memory(
+                    attn_output,
+                    external_kv,
+                    attention_mask
+                )
+            
+            if ext_out is not None:
+                memory_outputs.append(ext_out)
         
         # Compute gating weights using softmax
         # g = softmax(W_g @ h_t + b_g)  shape: [batch, seq_len, num_sources]
@@ -216,6 +269,15 @@ class HybridMemoryAttention(nn.Module):
             combined_output = combined_output + gate_weights[:, :, i:i+1] * mem_output
         
         return combined_output, updated_internal_memory
+    
+    def log_gate_value(self, step: int) -> Optional[float]:
+        """Log retrieval gate value for debugging."""
+        if self.use_gated_retrieval and self.g_retrieve is not None:
+            gate_value = torch.sigmoid(self.g_retrieve).item()
+            if step % 1000 == 0:
+                print(f"Layer {self.layer_idx} - Step {step}: Retrieval gate = {gate_value:.4f}")
+            return gate_value
+        return None
     
     def _compute_external_memory(
         self,
