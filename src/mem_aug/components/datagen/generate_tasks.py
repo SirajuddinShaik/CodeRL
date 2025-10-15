@@ -229,56 +229,71 @@ async def process_commit_diff(diff_text: str, system_prompt: str) -> List[str]:
             return []
 
 
-async def generate_tasks_for_commit(commit_dir: str) -> None:
+async def generate_tasks_for_commit(commit_dir: str, max_retries: int = 3) -> None:
     """
     Generate tasks for a single commit and store in the same commit directory.
+
+    Args:
+        commit_dir: Path to commit directory
+        max_retries: Maximum number of retry attempts on failure
     """
     commit_data_path = os.path.join(commit_dir, 'commit_data.json')
+    task_file = os.path.join(commit_dir, 'task.json')
+
+    # Skip if task.json already exists
+    if os.path.exists(task_file):
+        return
 
     if not os.path.exists(commit_data_path):
         return
 
-    try:
-        with open(commit_data_path, 'r') as f:
-            commit_data = json.load(f)
+    # Retry logic with exponential backoff
+    for attempt in range(max_retries):
+        try:
+            with open(commit_data_path, 'r') as f:
+                commit_data = json.load(f)
 
-        diff_text = commit_data.get('diff', '')
-        if not diff_text:
-            print(f"    ⚠️  No diff found in {commit_data_path}")
-            return
+            diff_text = commit_data.get('diff', '')
+            if not diff_text:
+                print(f"    ⚠️  No diff found in {commit_data_path}")
+                return
 
-        tasks = await process_commit_diff(diff_text, SYSTEM_PROMPT)
+            tasks = await process_commit_diff(diff_text, SYSTEM_PROMPT)
 
-        if tasks:
-            # Extract commit number from directory name (e.g., commit_10 -> 10)
-            commit_dir_name = os.path.basename(commit_dir)
-            commit_number = None
-            commit_pattern = re.compile(r'^commit_(\d+)$')
-            match = commit_pattern.match(commit_dir_name)
-            if match:
-                commit_number = int(match.group(1))
+            if tasks:
+                # Extract commit number from directory name (e.g., commit_10 -> 10)
+                commit_dir_name = os.path.basename(commit_dir)
+                commit_number = None
+                commit_pattern = re.compile(r'^commit_(\d+)$')
+                match = commit_pattern.match(commit_dir_name)
+                if match:
+                    commit_number = int(match.group(1))
 
-            # Store task.json in the SAME commit directory
-            task_file = os.path.join(commit_dir, 'task.json')
+                output_data = {
+                    'commit_number': commit_number,
+                    'commit_hash': commit_data.get('commit_hash', ''),
+                    'commit_metadata': commit_data.get('metadata', {}),
+                    'tasks': tasks,
+                    'task_count': len(tasks)
+                }
 
-            output_data = {
-                'commit_number': commit_number,
-                'commit_hash': commit_data.get('commit_hash', ''),
-                'commit_metadata': commit_data.get('metadata', {}),
-                'tasks': tasks,
-                'task_count': len(tasks)
-            }
+                with open(task_file, 'w') as f:
+                    json.dump(output_data, f, indent=2)
 
-            with open(task_file, 'w') as f:
-                json.dump(output_data, f, indent=2)
+                commit_hash = commit_data.get('commit_hash', '')[:8]
+                print(f"    ✓ Generated {len(tasks)} tasks for commit_{commit_number} ({commit_hash})")
+                return  # Success, exit retry loop
+            else:
+                print(f"    ⚠️  No tasks generated for commit")
+                return  # No tasks is not an error, don't retry
 
-            commit_hash = commit_data.get('commit_hash', '')[:8]
-            print(f"    ✓ Generated {len(tasks)} tasks for commit_{commit_number} ({commit_hash})")
-        else:
-            print(f"    ⚠️  No tasks generated for commit")
-
-    except Exception as e:
-        print(f"  ✗ Error processing {commit_data_path}: {e}")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                print(f"    ⚠️  Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                print(f"  ✗ Error processing {commit_data_path} after {max_retries} attempts: {e}")
 
 
 async def process_repository_tasks(repo_name: str, base_dir: str = 'data/ast_dataset'):
