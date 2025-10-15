@@ -24,7 +24,7 @@ def get_commit_hashes(repo_path, limit=None):
     command = ['git', 'rev-list', '--reverse']
     if limit:
         command.append(f'--max-count={limit}')
-    
+
     target_branch = None
     if branch_exists(repo_path, 'main'):
         target_branch = 'main'
@@ -41,12 +41,9 @@ def get_commit_hashes(repo_path, limit=None):
                 check=True
             )
             target_branch = result.stdout.strip()
-            print(f"Using default branch '{target_branch}' for {repo_path}")
         except subprocess.CalledProcessError:
             raise Exception(f"Neither 'main', 'master' nor any other branch found in {repo_path}")
 
-
-    print(f"Executing command: {' '.join(command)} {target_branch}")
     branch_command = command + [target_branch]
     result = subprocess.run(
         branch_command,
@@ -134,7 +131,6 @@ def process_repository(repo_name):
         temp_repo_path = os.path.join(temp_dir, repo_name)
         try:
             shutil.copytree(source_repo_path, temp_repo_path)
-            print(f"Copied {source_repo_path} to {temp_repo_path}")
         except Exception as e:
             print(f"Error copying repository {repo_name}: {e}")
             return
@@ -144,10 +140,8 @@ def process_repository(repo_name):
         git_path = os.path.join(temp_repo_path, '.git')
         if os.path.exists(git_disabled_path):
             os.rename(git_disabled_path, git_path)
-            print(f"Renamed .git_disabled to .git in {temp_repo_path}")
 
         original_branch = get_current_branch(temp_repo_path)
-        print(f"Original branch for {repo_name}: {original_branch}")
 
         # Stash any local changes before starting to process commits (on the temporary repo)
         try:
@@ -158,24 +152,23 @@ def process_repository(repo_name):
                 text=True,
                 check=False # Don't check for errors, as there might be no changes to stash
             )
-            print(f"Stashed local changes in {repo_name}")
         except Exception as e:
             print(f"Error stashing changes in {repo_name}: {e}")
 
         commit_hashes = get_commit_hashes(temp_repo_path, limit=max_commits)
+        total_commits = len(commit_hashes)
 
-        commit_count_msg = f"all commits" if max_commits is None else f"{max_commits} commits"
-        print(f"Processing {commit_count_msg} for {repo_name}")
-        
-        for i, commit_hash in enumerate(commit_hashes):
-            print(f"Processing commit {commit_hash} for {repo_name}")
-            
+        commit_count_msg = f"all {total_commits} commits" if max_commits is None else f"{total_commits} commits"
+        print(f"Processing {repo_name}: {commit_count_msg}")
+
+        for i, commit_hash in enumerate(commit_hashes, 1):
+
             # Create commit directory in the new dataset structure
-            commit_dataset_dir = os.path.join(repo_dataset_dir, f'commit_{i+1}')
+            commit_dataset_dir = os.path.join(repo_dataset_dir, f'commit_{i}')
             os.makedirs(commit_dataset_dir, exist_ok=True)
-            
+
             # Keep the original commit directory for repository files
-            commit_output_dir = os.path.join(base_output_dir, f'commit_{i+1}')
+            commit_output_dir = os.path.join(base_output_dir, f'commit_{i}')
             os.makedirs(commit_output_dir, exist_ok=True)
 
             # Checkout the repository to the specific commit
@@ -218,15 +211,13 @@ def process_repository(repo_name):
             git_dir_in_output = os.path.join(commit_output_dir, '.git')
             if os.path.exists(git_dir_in_output):
                 shutil.rmtree(git_dir_in_output)
-                print(f"Removed .git directory from {commit_output_dir}")
-            
+
             # List of other common git-related files to remove
             git_related_files = ['.gitattributes', '.gitignore', '.gitmodules']
             for git_file in git_related_files:
                 file_to_remove = os.path.join(commit_output_dir, git_file)
                 if os.path.exists(file_to_remove):
                     os.remove(file_to_remove)
-                    print(f"Removed {git_file} from {commit_output_dir}")
 
             # Get diff content for the current commit
             diff_content = get_commit_diff(temp_repo_path, commit_hash)
@@ -257,27 +248,23 @@ def process_repository(repo_name):
             commit_data_path = os.path.join(commit_dataset_dir, 'commit_data.json')
             with open(commit_data_path, 'w') as f:
                 json.dump(commit_data, f, indent=4)
-            print(f"Saved commit_data.json to {commit_data_path}")
 
             # Call the AST extraction script for the current commit directory
             ast_output_jsonl_path = os.path.join(commit_dataset_dir, 'ast.jsonl')
-            print(f"Extracting AST for commit {commit_hash} in {commit_dataset_dir}...")
             try:
                 extract_ast_main(commit_output_dir, ast_output_jsonl_path)
-                print(f"Successfully extracted AST data to {ast_output_jsonl_path}")
             except Exception as e:
                 print(f"Error extracting AST for commit {commit_hash}: {e}")
 
-            # Also save the raw AST file (if extract_ast_main creates it separately)
-            ast_file_path = os.path.join(commit_dataset_dir, 'ast')
-            print(f"AST files will be saved in {commit_dataset_dir}")
-
             # Clean up the commit output directory to free up space
+            # TEMPORARILY DISABLED - for debugging
             try:
                 shutil.rmtree(commit_output_dir)
-                print(f"Cleaned up commit directory {commit_output_dir} to free space")
             except Exception as e:
                 print(f"Warning: Failed to clean up {commit_output_dir}: {e}")
+
+            # Print completion message
+            print(f"  ✓ {repo_name}: commit {i}/{total_commits} ({commit_hash[:8]})")
 
         # After processing all commits, checkout back to the original branch
         try:
@@ -288,10 +275,9 @@ def process_repository(repo_name):
                 text=True,
                 check=True
             )
-            print(f"Checked out {repo_name} back to original branch: {original_branch}")
         except subprocess.CalledProcessError as e:
             print(f"Error checking out {repo_name} back to {original_branch}: {e.stderr}")
-        
+
         # Unstash changes
         try:
             subprocess.run(
@@ -301,9 +287,10 @@ def process_repository(repo_name):
                 text=True,
                 check=False # Don't check for errors, as there might be no stashed changes
             )
-            print(f"Unstashed local changes in {repo_name}")
         except Exception as e:
             print(f"Error unstashing changes in {repo_name}: {e}")
+
+    print(f"Completed {repo_name}: {total_commits} commits processed")
 
 # if __name__ == "__main__":
 #     repositories = ['bat', 'ripgrep', 'rust_calculator', 'starship'] # Example repositories
@@ -337,21 +324,20 @@ async def main(repos=None):
         repositories = repos
 
     print(f"\n{'='*60}")
-    print(f"Processing {len(repositories)} repositories for AST generation")
+    print(f"Starting AST generation for {len(repositories)} repositories")
     print(f"{'='*60}\n")
 
     # Create tasks for all repositories
     tasks = []
     for repo in repositories:
-        print(f"Starting processing for repository: {repo}")
         task = asyncio.create_task(process_repository_async(repo))
         tasks.append(task)
 
     # Wait for all tasks to complete
     await asyncio.gather(*tasks)
-    print("\n" + "="*60)
-    print("All repositories processed successfully!")
-    print("="*60)
+    print(f"\n{'='*60}")
+    print(f"All {len(repositories)} repositories processed successfully!")
+    print(f"{'='*60}\n")
 
 
 def cli():
@@ -361,7 +347,6 @@ def cli():
     if len(sys.argv) > 1:
         # Process specific repos provided as arguments
         repos = sys.argv[1:]
-        print(f"Processing specified repositories: {', '.join(repos)}")
         asyncio.run(main(repos))
     else:
         # Process all downloaded repos
