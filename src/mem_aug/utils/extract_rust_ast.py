@@ -16,15 +16,41 @@ def process_rust_file(file_path, project_root):
     root_node = tree.root_node
 
     imports = []
-    def find_imports(node):
+    extern_crates = []
+    attributes = []
+
+    def find_top_level_items(node):
         if node.type == 'use_declaration':
             imports.append(get_node_text(node, source_code))
+        elif node.type == 'extern_crate_declaration':
+            extern_crates.append(get_node_text(node, source_code))
+        elif node.type == 'attribute_item':
+            attributes.append(get_node_text(node, source_code))
         for child in node.children:
-            find_imports(child)
-    find_imports(root_node)
+            find_top_level_items(child)
+
+    find_top_level_items(root_node)
 
     items = []
     rel_file_path = os.path.relpath(file_path, project_root)
+
+    # Add a module-level entry capturing all top-level declarations
+    module_declarations = []
+    module_declarations.extend(extern_crates)
+    module_declarations.extend(attributes)
+    module_declarations.extend(imports)
+
+    if module_declarations:
+        items.append({
+            "id": f"{rel_file_path}::module",
+            "kind": "module_declarations",
+            "parent": None,
+            "code": "\n".join(module_declarations),
+            "file": rel_file_path,
+            "extern_crates": extern_crates,
+            "attributes": attributes,
+            "imports": imports
+        })
 
     def get_used_imports(code_block, all_imports):
         used = []
@@ -128,7 +154,7 @@ def main(project_path, output_jsonl="rust_ast.jsonl"):
         for fname in files:
             if fname.endswith(".rs"):
                 fpath = os.path.join(root, fname)
-                print(f"[*] Processing {fpath}")
+                # print(f"[*] Processing {fpath}")
                 try:
                     data = process_rust_file(fpath, project_path)
                     all_items.extend(data)
