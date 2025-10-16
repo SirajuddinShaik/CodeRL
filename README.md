@@ -73,18 +73,32 @@ cp .env.example .env
 # LLM_MODEL_NAME=gpt-3.5-turbo  (optional)
 
 # Test your LLM connection
-test-llm
+uv run test-llm
 ```
 
 #### Step 2: Manage Repositories
 
-```bash
-# Add repositories to track
-manage-repos add https://github.com/sharkdp/bat
-manage-repos add https://github.com/BurntSushi/ripgrep
+Repositories are configured in `config/config.yaml`. Edit the file to add or remove repositories:
 
-# List tracked repositories
-manage-repos list
+```yaml
+repositories:
+  - name: bat
+    url: "https://github.com/sharkdp/bat.git"
+  - name: ripgrep
+    url: "https://github.com/BurntSushi/ripgrep.git"
+```
+
+Then sync the repositories:
+
+```bash
+# Download all configured repositories
+uv run manage-repos sync
+
+# Check repository status
+uv run manage-repos status
+
+# List downloaded repositories
+uv run manage-repos list
 ```
 
 #### Step 3: Run the Data Generation Pipeline
@@ -93,26 +107,26 @@ The pipeline consists of 5 stages that should be run in sequence:
 
 ```bash
 # Stage 1: Extract AST from commits
-generate-ast
+uv run generate-ast
 
 # Stage 2: Generate AST diffs between commits
-generate-ast-diffs
+uv run generate-ast-diffs
 
 # Stage 3: Generate task descriptions from diffs (requires LLM)
-generate-tasks
+uv run generate-tasks
 
 # Stage 4: Generate reasoning for code changes (requires LLM)
-generate-reasoning
+uv run generate-reasoning
 
 # Stage 5: Build FIM (Fill-in-the-Middle) training dataset
-generate-fim
+uv run generate-fim
 ```
 
 **Process specific repositories:**
 ```bash
-generate-ast bat ripgrep
-generate-tasks bat
-generate-reasoning bat
+uv run generate-ast bat ripgrep
+uv run generate-tasks bat
+uv run generate-reasoning bat
 ```
 
 #### Step 4: Clean Up Generated Files (Optional)
@@ -121,16 +135,16 @@ If you need to regenerate specific files (e.g., after updating prompts):
 
 ```bash
 # Dry run to see what would be removed
-cleanup-dataset --tasks --reasoning --dry-run
+uv run cleanup-dataset --tasks --reasoning --dry-run
 
 # Remove task.json files to regenerate tasks
-cleanup-dataset --tasks
+uv run cleanup-dataset --tasks
 
 # Remove reasoning.json files to regenerate reasoning
-cleanup-dataset --reasoning
+uv run cleanup-dataset --reasoning
 
 # Remove specific files from specific repositories
-cleanup-dataset --tasks --reasoning bat ripgrep
+uv run cleanup-dataset --tasks --reasoning bat ripgrep
 ```
 
 #### Output Structure
@@ -307,15 +321,17 @@ The pipeline extracts function-level code changes from Git repositories and gene
 
 | Command | Description |
 |---------|-------------|
-| `manage-repos` | Manage tracked Git repositories |
-| `generate-ast` | Extract AST from commits |
-| `generate-ast-diffs` | Generate AST diffs |
-| `generate-tasks` | Generate task descriptions (LLM) |
-| `generate-reasoning` | Generate reasoning (LLM) |
-| `generate-fim` | Build FIM training dataset |
-| `test-llm` | Test LLM API connection |
-| `cleanup-dataset` | Remove generated files |
-| `check-ast-coverage` | Check AST extraction coverage |
+| `uv run manage-repos sync` | Download all configured repositories |
+| `uv run manage-repos status` | Show repository download status |
+| `uv run manage-repos list` | List downloaded repositories |
+| `uv run generate-ast [repos...]` | Extract AST from commits |
+| `uv run generate-ast-diffs [repos...]` | Generate AST diffs |
+| `uv run generate-tasks [repos...]` | Generate task descriptions (LLM) |
+| `uv run generate-reasoning [repos...]` | Generate reasoning (LLM) |
+| `uv run generate-fim [repos...]` | Build FIM training dataset |
+| `uv run test-llm` | Test LLM API connection |
+| `uv run cleanup-dataset --tasks/--reasoning/--fim [repos...]` | Remove generated files |
+| `uv run check-ast-coverage` | Check AST extraction coverage |
 
 ## Project Structure
 
