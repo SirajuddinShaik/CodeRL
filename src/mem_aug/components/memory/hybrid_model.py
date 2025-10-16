@@ -396,6 +396,7 @@ class HybridTransformerModel(PreTrainedModel):
     """
     
     config_class = HybridTransformerConfig
+    supports_gradient_checkpointing = True
     
     def __init__(self, config: HybridTransformerConfig, tokenizer: AutoTokenizer, base_model=None):
         super().__init__(config)
@@ -477,6 +478,9 @@ class HybridTransformerModel(PreTrainedModel):
         # Wrap decoder layers with hybrid memory (if they exist)
         if hasattr(self.model, 'layers') or hasattr(self.model, 'h'):
             self._wrap_decoder_layers()
+        
+        # Initialize gradient checkpointing state
+        self.gradient_checkpointing = False
     
     
     def get_model_info(self) -> Dict[str, Any]:
@@ -509,6 +513,28 @@ class HybridTransformerModel(PreTrainedModel):
         
         info.update(peft_info)
         return info
+    
+    def gradient_checkpointing_enable(self):
+        """Enable gradient checkpointing for the model."""
+        self.gradient_checkpointing = True
+        
+        # Enable on base model as well
+        if hasattr(self, 'full_model') and hasattr(self.full_model, 'gradient_checkpointing_enable'):
+            try:
+                self.full_model.gradient_checkpointing_enable()
+            except Exception:
+                pass
+    
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing for the model."""
+        self.gradient_checkpointing = False
+        
+        # Disable on base model as well
+        if hasattr(self, 'full_model') and hasattr(self.full_model, 'gradient_checkpointing_disable'):
+            try:
+                self.full_model.gradient_checkpointing_disable()
+            except Exception:
+                pass
     
     def _wrap_decoder_layers(self):
         """Wrap existing decoder layers with hybrid memory attention."""
@@ -714,15 +740,32 @@ class HybridTransformerModel(PreTrainedModel):
                 queries = hidden_states.transpose(0, 1)  # [seq_len, batch, hidden]
                 external_kv = self.external_memory.retrieve(queries)
             
-            # Forward through layer
-            hidden_states, internal_memory = decoder_layer(
-                hidden_states=hidden_states,
-                attention_mask=causal_mask,
-                position_ids=position_ids,
-                internal_memory=internal_memory,
-                external_kv=external_kv,
-                position_embeddings=position_embeddings,
-            )
+            # Forward through layer with optional gradient checkpointing
+            if self.gradient_checkpointing and self.training:
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+                    return custom_forward
+                
+                hidden_states, internal_memory = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(decoder_layer),
+                    hidden_states,
+                    causal_mask,
+                    position_ids,
+                    internal_memory,
+                    external_kv,
+                    position_embeddings,
+                    use_reentrant=False
+                )
+            else:
+                hidden_states, internal_memory = decoder_layer(
+                    hidden_states=hidden_states,
+                    attention_mask=causal_mask,
+                    position_ids=position_ids,
+                    internal_memory=internal_memory,
+                    external_kv=external_kv,
+                    position_embeddings=position_embeddings,
+                )
             
             # Collect hidden states if requested
             if output_hidden_states:
@@ -744,11 +787,21 @@ class HybridTransformerModel(PreTrainedModel):
         # Calculate loss if targets provided
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                targets.view(-1),
-                ignore_index=self.tokenizer.pad_token_id,
-            )
+            # Use standard ignore_index for cross entropy
+            flat_logits = logits.view(-1, logits.size(-1))
+            flat_targets = targets.view(-1)
+            
+            # Check if we have valid targets (not all -100)
+            valid_targets = flat_targets != -100
+            if valid_targets.sum() > 0:
+                loss = F.cross_entropy(
+                    flat_logits,
+                    flat_targets,
+                    ignore_index=-100,
+                )
+            else:
+                # If no valid targets, create a dummy loss
+                loss = torch.tensor(0.0, requires_grad=True, device=logits.device)
         
         # Update internal memory
         if self.internal_memory is not None:
