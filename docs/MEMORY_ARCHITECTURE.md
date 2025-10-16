@@ -620,7 +620,7 @@ retrieval_layers = [4, 6, 8]  # Layers 4, 6, 8
 
 ```python
 from transformers import AutoTokenizer
-from src.mem_aug.components.memory.hybrid_model import (
+from mem_aug.components.memory.hybrid_model import (
     HybridTransformerModel,
     HybridTransformerConfig
 )

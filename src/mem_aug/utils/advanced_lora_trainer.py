@@ -84,11 +84,11 @@ except ImportError:
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.mem_aug.components.memory.hybrid_model import (
+from mem_aug.components.memory.hybrid_model import (
     HybridTransformerModel, 
     HybridTransformerConfig
 )
-from src.mem_aug.utils.gradient_handler import (
+from mem_aug.utils.gradient_handler import (
     GradientHandler,
     create_gradient_aware_optimizer
 )

@@ -18,11 +18,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
-from src.mem_aug.components.memory.hybrid_model import (
+from mem_aug.components.memory.hybrid_model import (
     HybridTransformerModel,
     HybridTransformerConfig
 )
-from src.mem_aug.components.memory.external_memory import ExternalMemoryBank
+from mem_aug.components.memory.external_memory import ExternalMemoryBank
 
 # Try to import LoRA-related modules
 try:
